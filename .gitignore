@@ -1,0 +1,8 @@
+/venv
+.env
+/credentials
+/data
+/models
+*/*/__pycache__
+app/__pycache__
+app/api/routes/__pycache__
