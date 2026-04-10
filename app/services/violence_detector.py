@@ -15,12 +15,6 @@ class ViolenceDetector(BaseDetector):
         self.engine = engine
 
     def annotate_frame(self, frame):
-        """
-        Vẽ bbox + class name + confidence + label VIOLENCE lên frame.
-        Trả về:
-        - annotated_frame
-        - result YOLO
-        """
         annotated = frame.copy()
         result = self.engine.predict_frame(frame)
         boxes = result.boxes
@@ -42,10 +36,8 @@ class ViolenceDetector(BaseDetector):
 
             color = (0, 0, 255) if is_violence else (0, 255, 0)
 
-            # bbox
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
 
-            # label
             label = f"{class_name_str} {conf:.2f}"
             if is_violence:
                 label = f"VIOLENCE | {label}"

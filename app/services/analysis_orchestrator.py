@@ -67,42 +67,12 @@ class AnalysisOrchestrator:
             },
         )
 
-    def analyze_video_from_cloud(
-        self,
-        video_name: str,
-        run_fall_detection: bool,
-        run_violence_detection: bool,
-        pre_event_seconds: int,
-        post_event_seconds: int,
-    ) -> AnalysisResponse:
+    def analyze_video_from_cloud(self, video_name: str, run_fall_detection: bool, run_violence_detection: bool, pre_event_seconds: int, post_event_seconds: int) -> AnalysisResponse:
         local_video_path = self.video_source_service.download_video_from_cloud(video_name)
-        return self._analyze_source(
-            source=local_video_path,
-            source_name=video_name,
-            mode=DetectionMode.VIDEO,
-            run_fall_detection=run_fall_detection,
-            run_violence_detection=run_violence_detection,
-            pre_event_seconds=pre_event_seconds,
-            post_event_seconds=post_event_seconds,
-        )
+        return self._analyze_source(local_video_path, video_name, DetectionMode.VIDEO, run_fall_detection, run_violence_detection, pre_event_seconds, post_event_seconds)
 
-    def analyze_stream(
-        self,
-        stream_source: str,
-        run_fall_detection: bool,
-        run_violence_detection: bool,
-        pre_event_seconds: int,
-        post_event_seconds: int,
-    ) -> AnalysisResponse:
-        return self._analyze_source(
-            source=stream_source,
-            source_name=stream_source,
-            mode=DetectionMode.STREAM,
-            run_fall_detection=run_fall_detection,
-            run_violence_detection=run_violence_detection,
-            pre_event_seconds=pre_event_seconds,
-            post_event_seconds=post_event_seconds,
-        )
+    def analyze_stream(self, stream_source: str, run_fall_detection: bool, run_violence_detection: bool, pre_event_seconds: int, post_event_seconds: int) -> AnalysisResponse:
+        return self._analyze_source(stream_source, stream_source, DetectionMode.STREAM, run_fall_detection, run_violence_detection, pre_event_seconds, post_event_seconds)
 
     def _analyze_source(
         self,
@@ -114,17 +84,11 @@ class AnalysisOrchestrator:
         pre_event_seconds: int,
         post_event_seconds: int,
     ) -> AnalysisResponse:
-        job = AnalysisJob(
-            job_id=uuid4().hex,
-            source_name=source_name,
-            mode=mode,
-            status=AnalysisStatus.RUNNING,
-        )
+        job = AnalysisJob(job_id=uuid4().hex, source_name=source_name, mode=mode, status=AnalysisStatus.RUNNING)
 
         cap = self.video_source_service.open_capture(source)
         fps = cap.get(cv2.CAP_PROP_FPS)
-        if not fps or fps <= 0:
-            fps = self.settings.default_video_fps_fallback
+        if not fps or fps <= 0: fps = self.settings.default_video_fps_fallback
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -148,21 +112,18 @@ class AnalysisOrchestrator:
             "notifications_sent": {EventType.FALL.value: 0, EventType.VIOLENCE.value: 0},
         }
 
+        notified_ids = set()
         frame_index = 0
         try:
             while True:
                 ok, frame = cap.read()
-                if not ok:
-                    break
+                if not ok: break
 
                 timestamp_seconds = frame_index / fps if fps > 0 else 0.0
                 annotated_frame = frame.copy()
 
                 for detector in detectors:
-                    if isinstance(detector, FallDetector) and hasattr(detector, "annotate_frame"):
-                        annotated_frame, _ = detector.annotate_frame(annotated_frame)
-
-                    if isinstance(detector, ViolenceDetector) and hasattr(detector, "annotate_frame"):
+                    if hasattr(detector, "annotate_frame"):
                         annotated_frame, _ = detector.annotate_frame(annotated_frame)
 
                 all_frames_cache.append((frame_index, annotated_frame.copy()))
@@ -179,15 +140,22 @@ class AnalysisOrchestrator:
                             summary["events_detected"][record.event_type.value] += 1
 
                         should_notify, duration = state_service.should_notify(state, timestamp_seconds)
-                        if should_notify:
-                            self.notifier.notify(
-                                source_id=source_name,
-                                entity_id=entity_id,
-                                record=record,
-                                duration_seconds=duration,
-                            )
-                            state_service.mark_notified(state, timestamp_seconds)
-                            summary["notifications_sent"][record.event_type.value] += 1
+
+                        if should_notify and entity_id not in notified_ids:
+                            # SỬA QUAN TRỌNG: Thêm vào notified_ids TRƯỚC khi gọi API
+                            # Việc này đảm bảo kể cả khi API lỗi/timeout, chúng ta cũng không spam frame tiếp theo
+                            notified_ids.add(entity_id)
+                            
+                            print(f"[DEBUG][NOTIFY-IMMEDIATE] type={record.event_type.value} ID={entity_id}")
+                            try:
+                                self.notifier.notify(
+                                    source_id=source_name,
+                                    entity_id=entity_id,
+                                    record=record,
+                                    duration_seconds=duration
+                                )
+                            except Exception as e:
+                                print(f"[ERROR][NOTIFY] Immediate notification failed: {e}")
 
                 for event_type in [EventType.FALL, EventType.VIOLENCE]:
                     clip_manager.maybe_close_window(event_type, frame_index, all_frames_cache)
@@ -199,30 +167,50 @@ class AnalysisOrchestrator:
 
         completed = clip_manager.finalize(frame_index, all_frames_cache)
         uploaded_clips: list[StoredClip] = []
+
         for clip in completed:
-            uploaded_clips.append(self.cloud_clip_service.upload_clip(clip))
+            uploaded_clip = self.cloud_clip_service.upload_clip(clip)
+            uploaded_clips.append(uploaded_clip)
+
+            event_type = uploaded_clip.event_type
+            detector_name = "fall_detector" if event_type == EventType.FALL else "violence_detector"
+
+            class SimpleRecord:
+                def __init__(self):
+                    self.event_type = event_type
+                    self.detector_name = detector_name
+                    self.frame_index = uploaded_clip.start_frame
+                    self.timestamp_seconds = uploaded_clip.start_frame / uploaded_clip.fps if uploaded_clip.fps else 0.0
+                    self.confidence = 1.0
+                    self.metadata = {
+                        "clip_start_frame": uploaded_clip.start_frame,
+                        "clip_end_frame": uploaded_clip.end_frame,
+                        "remote_file_id": uploaded_clip.remote_file_id,
+                        "remote_link": uploaded_clip.remote_link,
+                    }
+
+            record = SimpleRecord()
+            try:
+                self.notifier.notify(
+                    source_id=source_name,
+                    entity_id="event_clip",
+                    record=record,
+                    duration_seconds=(uploaded_clip.end_frame - uploaded_clip.start_frame) / uploaded_clip.fps if uploaded_clip.fps else 0.0,
+                    event_clip_file_id=uploaded_clip.remote_file_id,
+                    event_clip_link=uploaded_clip.remote_link,
+                )
+                summary["notifications_sent"][uploaded_clip.event_type.value] += 1
+            except Exception as e:
+                print(f"[ERROR][NOTIFY] post-upload notify failed: {e}")
 
         job.status = AnalysisStatus.COMPLETED
         job.finished_at = datetime.utcnow()
-
         return AnalysisResponse(
-            job_id=job.job_id,
-            status=job.status,
-            mode=job.mode,
-            source_name=job.source_name,
-            clips=[
-                EventClipResponse(
-                    event_type=clip.event_type,
-                    local_path=str(clip.local_path),
-                    remote_file_id=clip.remote_file_id,
-                    remote_link=clip.remote_link,
-                    start_frame=clip.start_frame,
-                    end_frame=clip.end_frame,
-                    fps=clip.fps,
-                )
-                for clip in uploaded_clips
-            ],
-            summary=summary,
-            started_at=job.created_at,
-            finished_at=job.finished_at,
+            job_id=job.job_id, status=job.status, mode=job.mode, source_name=job.source_name,
+            clips=[EventClipResponse(
+                event_type=c.event_type, local_path=str(c.local_path),
+                remote_file_id=c.remote_file_id, remote_link=c.remote_link,
+                start_frame=c.start_frame, end_frame=c.end_frame, fps=c.fps
+            ) for c in uploaded_clips],
+            summary=summary, started_at=job.created_at, finished_at=job.finished_at
         )

@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     google_drive_oauth_client_secret: str | None = None
     google_drive_oauth_token_json: str | None = None
 
-    fall_event_api_url: str = "http://localhost:9001/fall-events"
-    violence_event_api_url: str = "http://localhost:9002/violence-events"
+    fall_event_api_url: str = "https://7ad4-42-112-211-205.ngrok-free.app/PKA_ElderGuard/events"
+    violence_event_api_url: str = "https://7ad4-42-112-211-205.ngrok-free.app/PKA_ElderGuard/events"
     event_api_timeout_seconds: float = 2.0
 
     default_pre_event_seconds: int = 120
@@ -29,17 +29,17 @@ class Settings(BaseSettings):
     fall_model_xml: Path = Path("./models/movenet_multipose_lightning_256x256_FP32.xml")
     fall_device: str = "CPU"
     fall_score_thresh: float = 0.2
-    fall_trigger_seconds: int = 10
-    fall_min_positive_frames: int = 3
-    fall_max_negative_frames: int = 5
+    fall_trigger_seconds: float = 2.0
+    fall_min_positive_frames: int = 2
+    fall_max_negative_frames: int = 8
 
     violence_model_pt: Path = Path("./models/best.pt")
     violence_conf: float = 0.25
     violence_imgsz: int = 416
     violence_device: str | None = None
-    violence_trigger_seconds: int = 10
-    violence_min_positive_frames: int = 3
-    violence_max_negative_frames: int = 5
+    violence_trigger_seconds: float = 2.0
+    violence_min_positive_frames: int = 2
+    violence_max_negative_frames: int = 8
 
     default_video_fps_fallback: float = 25.0
 
