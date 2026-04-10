@@ -28,7 +28,7 @@ Backend này cung cấp các khả năng chính:
 # 2. Các chức năng chính
 
 ## 2.1 Fall Detection
-Sử dụng pipeline pose estimation với OpenVINO để:
+Sử dụng pipeline pose estimation với MoveNet và OpenVINO để:
 
 - phát hiện người trong frame
 - trích xuất keypoints / skeleton
@@ -202,6 +202,7 @@ Chứa các thành phần tích hợp công nghệ cụ thể:
 
 ```
 OpenVINO
+MoveNet
 YOLO
 Google Drive
 tracker
