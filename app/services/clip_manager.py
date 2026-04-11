@@ -107,7 +107,7 @@ class ClipManager:
 
         writer = cv2.VideoWriter(
             str(output_path),
-            cv2.VideoWriter_fourcc(*"mp4v"),
+            cv2.VideoWriter_fourcc(*'avc1'),
             self.fps,
             (self.frame_width, self.frame_height),
         )

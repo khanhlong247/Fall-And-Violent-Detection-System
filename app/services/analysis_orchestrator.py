@@ -20,14 +20,30 @@ from app.services.event_state_service import EventStateService
 from app.services.fall_detector import FallDetector
 from app.services.video_source_service import VideoSourceService
 from app.services.violence_detector import ViolenceDetector
-
+from app.infrastructure.s3_storage import S3StorageService
 
 class AnalysisOrchestrator:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.storage = GoogleDriveStorage(settings.google_drive_credentials_json)
-        self.video_source_service = VideoSourceService(settings, self.storage)
-        self.cloud_clip_service = CloudClipService(settings, self.storage)
+        
+        # 1. Dùng S3StorageService để ghi kết quả (Output)
+        self.s3_service = S3StorageService(
+            bucket_name=settings.S3_BUCKET_NAME,
+            region=settings.S3_REGION,
+            access_key=settings.AWS_ACCESS_KEY_ID,
+            secret_key=settings.AWS_SECRET_ACCESS_KEY
+        )
+        
+        # 2. Dùng GoogleDriveStorage để tải video gốc (Input)
+        self.drive_storage = GoogleDriveStorage(
+            credentials_json=settings.google_drive_credentials_json
+        )
+        
+        # TRUYỀN drive_storage vào VideoSourceService để tải video gốc từ Drive
+        self.video_source_service = VideoSourceService(settings, self.drive_storage)
+        
+        # CloudClipService dùng S3 để upload
+        self.cloud_clip_service = CloudClipService(settings, self.s3_service)
         self.notifier = EventNotifier(settings)
 
     def _build_detectors(self, run_fall_detection: bool, run_violence_detection: bool):
@@ -141,11 +157,9 @@ class AnalysisOrchestrator:
 
                         should_notify, duration = state_service.should_notify(state, timestamp_seconds)
 
+                        # THÔNG BÁO LẦN 1: TỨC THỜI (url: "")
                         if should_notify and entity_id not in notified_ids:
-                            # SỬA QUAN TRỌNG: Thêm vào notified_ids TRƯỚC khi gọi API
-                            # Việc này đảm bảo kể cả khi API lỗi/timeout, chúng ta cũng không spam frame tiếp theo
-                            notified_ids.add(entity_id)
-                            
+                            notified_ids.add(entity_id) # Chặn spam trước khi gửi
                             print(f"[DEBUG][NOTIFY-IMMEDIATE] type={record.event_type.value} ID={entity_id}")
                             try:
                                 self.notifier.notify(
@@ -165,43 +179,51 @@ class AnalysisOrchestrator:
         finally:
             cap.release()
 
+        # THÔNG BÁO LẦN 2: SAU KHI CÓ VIDEO
         completed = clip_manager.finalize(frame_index, all_frames_cache)
         uploaded_clips: list[StoredClip] = []
 
         for clip in completed:
-            uploaded_clip = self.cloud_clip_service.upload_clip(clip)
-            uploaded_clips.append(uploaded_clip)
-
-            event_type = uploaded_clip.event_type
-            detector_name = "fall_detector" if event_type == EventType.FALL else "violence_detector"
-
-            class SimpleRecord:
-                def __init__(self):
-                    self.event_type = event_type
-                    self.detector_name = detector_name
-                    self.frame_index = uploaded_clip.start_frame
-                    self.timestamp_seconds = uploaded_clip.start_frame / uploaded_clip.fps if uploaded_clip.fps else 0.0
-                    self.confidence = 1.0
-                    self.metadata = {
-                        "clip_start_frame": uploaded_clip.start_frame,
-                        "clip_end_frame": uploaded_clip.end_frame,
-                        "remote_file_id": uploaded_clip.remote_file_id,
-                        "remote_link": uploaded_clip.remote_link,
-                    }
-
-            record = SimpleRecord()
             try:
+                # Upload lên S3
+                uploaded_clip = self.s3_service.upload_clip(clip)
+                uploaded_clips.append(uploaded_clip)
+
+                event_type = uploaded_clip.event_type
+                detector_name = "fall_detector" if event_type == EventType.FALL else "violence_detector"
+
+                class SimpleRecord:
+                    def __init__(self):
+                        self.event_type = event_type
+                        self.detector_name = detector_name
+                        self.frame_index = uploaded_clip.start_frame
+                        self.timestamp_seconds = uploaded_clip.start_frame / uploaded_clip.fps if uploaded_clip.fps else 0.0
+                        self.confidence = 1.0
+                        self.metadata = {
+                            "clip_start_frame": uploaded_clip.start_frame,
+                            "clip_end_frame": uploaded_clip.end_frame,
+                            "remote_file_id": uploaded_clip.remote_file_id,
+                            "remote_link": uploaded_clip.remote_link,
+                        }
+
+                record = SimpleRecord()
+                
+                # Để Backend dễ khớp nối, Lần 2 ta dùng ID dựa trên event_type 
+                # (vì clip_manager hiện tại không giữ lại track_id của từng người)
+                final_entity_id = f"{event_type.value}_clip_final"
+
                 self.notifier.notify(
                     source_id=source_name,
-                    entity_id="event_clip",
+                    entity_id=final_entity_id,
                     record=record,
                     duration_seconds=(uploaded_clip.end_frame - uploaded_clip.start_frame) / uploaded_clip.fps if uploaded_clip.fps else 0.0,
                     event_clip_file_id=uploaded_clip.remote_file_id,
                     event_clip_link=uploaded_clip.remote_link,
                 )
                 summary["notifications_sent"][uploaded_clip.event_type.value] += 1
+
             except Exception as e:
-                print(f"[ERROR][NOTIFY] post-upload notify failed: {e}")
+                print(f"[ERROR][S3-PROCESS] failed for clip {clip.local_path}: {e}")
 
         job.status = AnalysisStatus.COMPLETED
         job.finished_at = datetime.utcnow()

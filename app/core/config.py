@@ -18,9 +18,14 @@ class Settings(BaseSettings):
     google_drive_event_folder_id: str | None = None
     google_drive_oauth_client_secret: str | None = None
     google_drive_oauth_token_json: str | None = None
+    
+    S3_BUCKET_NAME: str = "YOUR BUCKET NAME"
+    S3_REGION: str = "YOUR REGION"
+    AWS_ACCESS_KEY_ID: str = "YOUR ACCESS KEY ID"
+    AWS_SECRET_ACCESS_KEY: str = "YOUR SECRET ACCESS KEY"
 
-    fall_event_api_url: str = "https://7ad4-42-112-211-205.ngrok-free.app/PKA_ElderGuard/events"
-    violence_event_api_url: str = "https://7ad4-42-112-211-205.ngrok-free.app/PKA_ElderGuard/events"
+    fall_event_api_url: str = "https://8918-42-112-211-205.ngrok-free.app/PKA_ElderGuard/events"
+    violence_event_api_url: str = "https://8918-42-112-211-205.ngrok-free.app/PKA_ElderGuard/events"
     event_api_timeout_seconds: float = 2.0
 
     default_pre_event_seconds: int = 120
